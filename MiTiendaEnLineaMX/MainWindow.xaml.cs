@@ -31,7 +31,17 @@ namespace MiTiendaEnLineaMX
 
             try
             {
-                await webView.EnsureCoreWebView2Async();
+                string userDataFolder = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "MiTiendaEnLineaMX",
+                    "WebView2"
+                );
+
+                Directory.CreateDirectory(userDataFolder);
+
+                var env = await CoreWebView2Environment.CreateAsync(null, userDataFolder);
+
+                await webView.EnsureCoreWebView2Async(env);
 
                 if (webView.CoreWebView2 != null)
                 {
@@ -44,6 +54,7 @@ namespace MiTiendaEnLineaMX
             catch (Exception ex)
             {
                 AppendLog("Error inicializando WebView2: " + ex.Message);
+                MessageBox.Show("Error al abrir el sitio: " + ex.Message);
             }
         }
 

@@ -57,6 +57,9 @@ namespace MiTiendaEnLineaMX
 
         public void PrintUsb(string printerName, byte[] bytes)
         {
+            if (string.IsNullOrWhiteSpace(printerName))
+                throw new Exception("Nombre de impresora USB vacío.");
+
             RawPrinterHelper.SendBytesToPrinter(printerName, bytes);
         }
 
@@ -106,22 +109,36 @@ namespace MiTiendaEnLineaMX
             string? logoBase64 = null)
         {
             int cols = paperSize == PaperSize.Mm80 ? 48 : 32;
+            int paperWidthDots = paperSize == PaperSize.Mm58 ? 384 : 576;
 
             List<byte> bytes = new List<byte>();
 
             bytes.AddRange(Init());
+            bytes.AddRange(SetLeftMargin(0));
+            bytes.AddRange(SetPrintAreaWidth(paperWidthDots));
 
             if (!string.IsNullOrWhiteSpace(logoBase64))
             {
-                byte[]? logoBytes = TryBuildImageFromBase64(logoBase64, 160, true);
+                int demoLogoWidth = paperSize == PaperSize.Mm58 ? 256 : 384;
+                byte[]? logoBytes = TryBuildImageFromBase64(
+                    logoBase64,
+                    demoLogoWidth,
+                    paperWidthDots,
+                    true
+                );
+
                 if (logoBytes != null)
                 {
+                    bytes.AddRange(SetLeftMargin(0));
+                    bytes.AddRange(SetPrintAreaWidth(paperWidthDots));
                     bytes.AddRange(AlignCenter());
                     bytes.AddRange(logoBytes);
                     bytes.AddRange(Lf(1));
                 }
             }
 
+            bytes.AddRange(SetLeftMargin(0));
+            bytes.AddRange(SetPrintAreaWidth(paperWidthDots));
             bytes.AddRange(AlignCenter());
             bytes.AddRange(Bold(true));
             bytes.AddRange(Text("MITIENDAENLINEAMX\n"));
@@ -146,8 +163,12 @@ namespace MiTiendaEnLineaMX
 
             if (!string.IsNullOrWhiteSpace(qrText))
             {
+                bytes.AddRange(SetLeftMargin(0));
+                bytes.AddRange(SetPrintAreaWidth(paperWidthDots));
+                bytes.AddRange(AlignCenter());
                 bytes.AddRange(Lf(1));
                 bytes.AddRange(Qr(qrText, 8, 49));
+                bytes.AddRange(Lf(1));
             }
 
             bytes.AddRange(Lf(3));
@@ -166,68 +187,263 @@ namespace MiTiendaEnLineaMX
 
         public byte[] BuildTicketFromPayload(PrintPayload payload)
         {
-            PaperSize paper = payload.PaperSize == "58" ? PaperSize.Mm58 : PaperSize.Mm80;
+            if (payload == null)
+                throw new Exception("Payload vacío.");
+
+            int paperSize = NormalizePaperSize(payload.Paper?.Size ?? 80);
+            int paperWidthDots = GetPaperWidthDots(paperSize);
+
+            NormalizeCharsPerLine(
+                payload.Paper?.CharsPerLine ?? (paperSize == 58 ? 32 : 48),
+                paperSize
+            );
 
             List<byte> bytes = new List<byte>();
-
             bytes.AddRange(Init());
 
+            bytes.AddRange(SetLeftMargin(0));
+            bytes.AddRange(SetPrintAreaWidth(paperWidthDots));
+
+            // LOGO
             if (!string.IsNullOrWhiteSpace(payload.Logo))
             {
-                bool center = string.Equals(payload.LogoAlign, "center", StringComparison.OrdinalIgnoreCase);
-                byte[]? logoBytes = TryBuildImageFromBase64(payload.Logo, payload.LogoMaxWidth, center);
+                bool center = string.Equals(
+                    payload.LogoAlign,
+                    "center",
+                    StringComparison.OrdinalIgnoreCase
+                );
+
+                int logoMaxWidth = NormalizeLogoMaxWidth(payload.LogoMaxWidth, paperSize);
+
+                byte[]? logoBytes = TryBuildImageFromBase64(
+                    payload.Logo,
+                    logoMaxWidth,
+                    paperWidthDots,
+                    center
+                );
 
                 if (logoBytes != null)
                 {
-                    if (center)
-                        bytes.AddRange(AlignCenter());
-                    else
-                        bytes.AddRange(AlignLeft());
-
+                    bytes.AddRange(SetLeftMargin(0));
+                    bytes.AddRange(SetPrintAreaWidth(paperWidthDots));
+                    bytes.AddRange(center ? AlignCenter() : AlignLeft());
                     bytes.AddRange(logoBytes);
                     bytes.AddRange(Lf(1));
                 }
             }
 
+            bytes.AddRange(SetLeftMargin(0));
+            bytes.AddRange(SetPrintAreaWidth(paperWidthDots));
             bytes.AddRange(AlignLeft());
 
+            // TEXTO ANTES DE QR
             if (!string.IsNullOrWhiteSpace(payload.TextBeforeQr))
             {
                 bytes.AddRange(Text(NormalizeNewlines(payload.TextBeforeQr)));
                 bytes.AddRange(Lf(1));
             }
 
-            if (!string.IsNullOrWhiteSpace(payload.QrText))
+            // MULTI QR NUEVO
+            if (payload.Qrs != null && payload.Qrs.Count > 0)
             {
+                foreach (var qr in payload.Qrs)
+                {
+                    if (qr == null || string.IsNullOrWhiteSpace(qr.Text))
+                        continue;
+
+                    bool center = string.Equals(
+                        qr.Align,
+                        "center",
+                        StringComparison.OrdinalIgnoreCase
+                    );
+
+                    int qrSize = NormalizeQrSize(qr.Size);
+                    int qrEcc = NormalizeQrEcc(qr.Ecc);
+
+                    bytes.AddRange(SetLeftMargin(0));
+                    bytes.AddRange(SetPrintAreaWidth(paperWidthDots));
+                    bytes.AddRange(center ? AlignCenter() : AlignLeft());
+                    bytes.AddRange(Qr(qr.Text, qrSize, qrEcc));
+                    bytes.AddRange(Lf(1));
+
+                    if (!string.IsNullOrWhiteSpace(qr.Caption))
+                    {
+                        bytes.AddRange(SetLeftMargin(0));
+                        bytes.AddRange(SetPrintAreaWidth(paperWidthDots));
+                        bytes.AddRange(center ? AlignCenter() : AlignLeft());
+                        bytes.AddRange(Text(NormalizeNewlines(qr.Caption)));
+                        bytes.AddRange(Lf(1));
+                    }
+
+                    bytes.AddRange(Lf(1));
+                }
+
+                bytes.AddRange(SetLeftMargin(0));
+                bytes.AddRange(SetPrintAreaWidth(paperWidthDots));
+                bytes.AddRange(AlignLeft());
+            }
+            // FALLBACK VIEJO
+            else if (!string.IsNullOrWhiteSpace(payload.QrText))
+            {
+                int qrSize = NormalizeQrSize(payload.QrSize);
+                int qrEcc = NormalizeQrEcc(payload.QrEcc);
+
+                bytes.AddRange(SetLeftMargin(0));
+                bytes.AddRange(SetPrintAreaWidth(paperWidthDots));
                 bytes.AddRange(AlignCenter());
-                bytes.AddRange(Qr(payload.QrText, payload.QrSize, payload.QrEcc));
+                bytes.AddRange(Qr(payload.QrText, qrSize, qrEcc));
                 bytes.AddRange(Lf(1));
                 bytes.AddRange(AlignLeft());
             }
 
+            // TEXTO DESPUÉS DE QR
             if (!string.IsNullOrWhiteSpace(payload.TextAfterQr))
             {
+                bytes.AddRange(SetLeftMargin(0));
+                bytes.AddRange(SetPrintAreaWidth(paperWidthDots));
+                bytes.AddRange(AlignLeft());
                 bytes.AddRange(Text(NormalizeNewlines(payload.TextAfterQr)));
                 bytes.AddRange(Lf(1));
             }
 
             bytes.AddRange(Lf(3));
 
+            // CAJÓN
             if (payload.OpenDrawer)
             {
                 bytes.AddRange(OpenDrawerSequence(payload.DrawerPin));
                 bytes.AddRange(Lf(1));
             }
 
+            // CORTE
             if (payload.Cut)
                 bytes.AddRange(CutPartial());
 
             return bytes.ToArray();
         }
 
+        public async Task PrintPayloadAsync(PrintPayload payload, PrinterConfig? fallbackConfig = null)
+        {
+            if (payload == null)
+                throw new Exception("Payload vacío.");
+
+            byte[] bytes = BuildTicketFromPayload(payload);
+
+            string transport = (payload.Transport ?? "usb").Trim().ToLowerInvariant();
+
+            if (transport == "tcp")
+            {
+                string? ip = payload.Printer?.Ip;
+                int port = payload.Printer?.Port ?? 9100;
+
+                if (!string.IsNullOrWhiteSpace(ip))
+                {
+                    await PrintTcp(ip, port, bytes);
+                    return;
+                }
+
+                if (fallbackConfig != null && fallbackConfig.Mode == PrinterMode.Tcp)
+                {
+                    await PrintAsync(fallbackConfig, bytes);
+                    return;
+                }
+
+                throw new Exception("El payload indicó TCP pero no trae IP válida.");
+            }
+
+            if (transport == "usb")
+            {
+                if (fallbackConfig != null && fallbackConfig.Mode == PrinterMode.Usb)
+                {
+                    await PrintAsync(fallbackConfig, bytes);
+                    return;
+                }
+
+                if (fallbackConfig != null && !string.IsNullOrWhiteSpace(fallbackConfig.PrinterName))
+                {
+                    PrintUsb(fallbackConfig.PrinterName, bytes);
+                    return;
+                }
+
+                throw new Exception("El payload indicó USB pero no hay impresora USB configurada.");
+            }
+
+            if (fallbackConfig != null)
+            {
+                await PrintAsync(fallbackConfig, bytes);
+                return;
+            }
+
+            throw new Exception($"Transport no soportado: {payload.Transport}");
+        }
+
         private string NormalizeNewlines(string input)
         {
             return input.Replace("\r\n", "\n").Replace("\r", "\n");
+        }
+
+        private int NormalizePaperSize(int size)
+        {
+            return size == 58 ? 58 : 80;
+        }
+
+        private int NormalizeCharsPerLine(int charsPerLine, int paperSize)
+        {
+            int defaultValue = paperSize == 58 ? 32 : 48;
+
+            if (charsPerLine < 16 || charsPerLine > 64)
+                return defaultValue;
+
+            return charsPerLine;
+        }
+
+        private int NormalizeQrSize(int size)
+        {
+            if (size < 1) return 1;
+            if (size > 16) return 16;
+            return size;
+        }
+
+        private int NormalizeQrEcc(int ecc)
+        {
+            if (ecc < 48) return 48;
+            if (ecc > 51) return 51;
+            return ecc;
+        }
+
+        private int NormalizeLogoMaxWidth(int logoMaxWidth, int paperSize)
+        {
+            int defaultValue = paperSize == 58 ? 256 : 384;
+
+            if (logoMaxWidth < 64 || logoMaxWidth > 1024)
+                return defaultValue;
+
+            return logoMaxWidth;
+        }
+
+        private int GetPaperWidthDots(int paperSize)
+        {
+            return paperSize == 58 ? 384 : 576;
+        }
+
+        private byte[] SetLeftMargin(int dots)
+        {
+            if (dots < 0) dots = 0;
+
+            byte nL = (byte)(dots & 0xFF);
+            byte nH = (byte)((dots >> 8) & 0xFF);
+
+            return new byte[] { 0x1D, 0x4C, nL, nH };
+        }
+
+        private byte[] SetPrintAreaWidth(int dots)
+        {
+            if (dots < 1) dots = 1;
+
+            byte nL = (byte)(dots & 0xFF);
+            byte nH = (byte)((dots >> 8) & 0xFF);
+
+            return new byte[] { 0x1D, 0x57, nL, nH };
         }
 
         private byte[] Init() => new byte[] { 0x1B, 0x40 };
@@ -337,7 +553,7 @@ namespace MiTiendaEnLineaMX
             return bytes.ToArray();
         }
 
-        private byte[]? TryBuildImageFromBase64(string base64Input, int maxWidth, bool center)
+        private byte[]? TryBuildImageFromBase64(string base64Input, int maxWidth, int paperWidthDots, bool center)
         {
             try
             {
@@ -345,7 +561,7 @@ namespace MiTiendaEnLineaMX
                 using MemoryStream ms = new MemoryStream(imageBytes);
                 using Bitmap original = new Bitmap(ms);
 
-                Bitmap prepared = PrepareBitmap(original, maxWidth);
+                Bitmap prepared = PrepareBitmap(original, maxWidth, paperWidthDots, center);
 
                 try
                 {
@@ -375,26 +591,42 @@ namespace MiTiendaEnLineaMX
             return Convert.FromBase64String(clean);
         }
 
-        private Bitmap PrepareBitmap(Bitmap original, int maxWidth)
+        private Bitmap PrepareBitmap(Bitmap original, int maxWidth, int paperWidthDots, bool center)
         {
             int targetWidth = original.Width;
             int targetHeight = original.Height;
 
-            if (maxWidth > 0 && original.Width > maxWidth)
+            if (maxWidth > 0 && targetWidth > maxWidth)
             {
-                double ratio = (double)maxWidth / original.Width;
+                double ratio = (double)maxWidth / targetWidth;
                 targetWidth = maxWidth;
                 targetHeight = Math.Max(1, (int)Math.Round(original.Height * ratio));
             }
 
-            Bitmap resized = new Bitmap(targetWidth, targetHeight);
-            using Graphics g = Graphics.FromImage(resized);
-            g.Clear(Color.White);
-            g.DrawImage(original, 0, 0, targetWidth, targetHeight);
+            using Bitmap resized = new Bitmap(targetWidth, targetHeight);
+            using (Graphics g = Graphics.FromImage(resized))
+            {
+                g.Clear(Color.White);
+                g.DrawImage(original, 0, 0, targetWidth, targetHeight);
+            }
 
-            return resized;
+            // Usar el ancho exacto del papel para centrar correctamente
+            int canvasWidth = paperWidthDots;
+            Bitmap canvas = new Bitmap(canvasWidth, targetHeight);
+
+            using (Graphics g = Graphics.FromImage(canvas))
+            {
+                g.Clear(Color.White);
+
+                int x = center
+                    ? (canvasWidth - targetWidth) / 2
+                    : 0;
+
+                g.DrawImage(resized, x, 0, targetWidth, targetHeight);
+            }
+
+            return canvas;
         }
-
         private byte[] RasterImage(Bitmap bitmap)
         {
             List<byte> output = new List<byte>();

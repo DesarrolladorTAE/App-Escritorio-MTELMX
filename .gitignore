@@ -1,6 +1,7 @@
-.vs/
+installer/*.exe
 bin/
 obj/
+.vs/
 *.user
 *.suo
 *.userosscache
